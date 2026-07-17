@@ -218,7 +218,8 @@ async function summarizeFileContent(file: {name: string; content: string; path: 
       temperature: 0.3
     }, {
       headers: {
-        'Authorization': `Bearer ${process.env.NIM_API_KEY}`,\n        'Content-Type': 'application/json'
+        'Authorization': `Bearer ${process.env.NIM_API_KEY}`,
+        'Content-Type': 'application/json'
       },
       timeout: 30000
     });
@@ -254,7 +255,8 @@ async function generateAnalysis(sourceFiles: {name: string; content: string; pat
       temperature: 0.3
     }, {
       headers: {
-        'Authorization': `Bearer ${process.env.NIM_API_KEY}`,\n        'Content-Type': 'application/json'
+        'Authorization': `Bearer ${process.env.NIM_API_KEY}`,
+        'Content-Type': 'application/json'
       },
       timeout: 60000
     });
