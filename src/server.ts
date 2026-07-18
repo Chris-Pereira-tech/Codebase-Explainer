@@ -28,6 +28,67 @@ const NIM_RATE_LIMIT = 40; // requests per minute
 const NIM_DELAY = 60000 / NIM_RATE_LIMIT; // delay between calls in ms
 let lastNIMCall = 0;
 
+// Mock LLM mode - returns realistic fake data for testing
+const USE_MOCK_LLM = process.env.USE_MOCK_LLM === 'true';
+
+// Mock file summary generator
+function generateMockFileSummary(file: {name: string; content: string; path: string}): string {
+  const fileType = file.name.split('.').pop()?.toLowerCase();
+  const summaries: Record<string, string> = {
+    'ts': `TypeScript source file that implements core logic for the ${file.name.replace(/\.[^.]+$/, '')} module, including type definitions and exported utilities.`,
+    'tsx': `React component (${file.name.replace(/\.[^.]+$/, '')}) providing interactive UI elements with state management and event handling.`,
+    'js': `JavaScript module containing application logic and exported functions for the ${file.name.replace(/\.[^.]+$/, '')} feature.`,
+    'jsx': `React component using JSX for declarative UI rendering of the ${file.name.replace(/\.[^.]+$/, '')} view.`,
+    'json': `Configuration file (${file.name}) defining project settings, dependencies, or structured data.`,
+    'md': `Markdown documentation file providing project information and usage instructions.`,
+    'css': `Stylesheet defining visual appearance rules for the ${file.name.replace(/\.[^.]+$/, '')} component.`,
+    'html': `HTML template providing the structural markup for the application.`,
+    'yml': `YAML configuration file for CI/CD, deployment, or project settings.`,
+    'yaml': `YAML configuration file for CI/CD, deployment, or project settings.`
+  };
+  return summaries[fileType || ''] || `Source file '${file.name}' contributing to the codebase architecture.`;
+}
+
+// Mock analysis generator
+function generateMockAnalysis(sourceFiles: {name: string; content: string; path: string}[], dependencyGraph: Record<string, string[]>): any {
+  const entryPoints = sourceFiles.slice(0, 5).map((f, i) => ({
+    file: f.name,
+    why: `Key entry point ${i + 1} — serves as a primary interface for the ${f.name.replace(/\.[^.]+$/, '')} module.`
+  }));
+
+  const readingOrder = sourceFiles.slice(0, 5).map((f, i) => ({
+    file: f.name,
+    order: i + 1,
+    reason: `Read ${i === 0 ? 'first' : 'next'} to understand the ${f.name.replace(/\.[^.]+$/, '')} layer before dependent modules.`
+  }));
+
+  // Build mermaid diagram from actual dependency graph
+  const mermaidNodes = sourceFiles.slice(0, 8).map((f, i) =>
+    `    ${String.fromCharCode(65 + i)}[${f.name}]`
+  ).join('\n');
+  const mermaidEdges = Object.entries(dependencyGraph)
+    .slice(0, 6)
+    .flatMap(([src, deps]) => {
+      const srcIdx = sourceFiles.findIndex(f => f.name === src);
+      return deps.map(dep => {
+        const depIdx = sourceFiles.findIndex(f => f.name === dep);
+        if (srcIdx >= 0 && srcIdx < 8 && depIdx >= 0 && depIdx < 8) {
+          return `    ${String.fromCharCode(65 + srcIdx)} --> ${String.fromCharCode(65 + depIdx)}`;
+        }
+        return null;
+      }).filter(Boolean);
+    }).join('\n');
+
+  const mermaidDiagram = `graph TD;\n${mermaidNodes}${mermaidEdges ? '\n' + mermaidEdges : ''}`;
+
+  return {
+    overview: `This ${sourceFiles.length}-file codebase implements a web application with a Node.js/Express backend and React frontend. The architecture follows a client-server pattern with API integration for code analysis and visualization.`,
+    entryPoints: entryPoints.length > 0 ? entryPoints : [{ file: 'server.ts', why: 'Main backend entry point' }],
+    readingOrder,
+    mermaidDiagram
+  };
+}
+
 // Get free tier rate limit to check if we're over limit
 async function checkRateLimit(): Promise<boolean> {
   try {
@@ -213,6 +274,11 @@ async function buildDependencyGraph(sourceFiles: {name: string; content: string;
 
 // Summarize file content with NIM API
 async function summarizeFileContent(file: {name: string; content: string; path: string}): Promise<string> {
+  // Return mock data if USE_MOCK_LLM is enabled
+  if (USE_MOCK_LLM) {
+    return generateMockFileSummary(file);
+  }
+
   try {
     // Check if we should proceed with NIM call
     const canProceed = await checkRateLimit();
@@ -248,6 +314,12 @@ async function summarizeFileContent(file: {name: string; content: string; path: 
 
 // Generate analysis with NIM API
 async function generateAnalysis(sourceFiles: {name: string; content: string; path: string}[], dependencyGraph: Record<string, string[]>): Promise<any> {
+  // Return mock data if USE_MOCK_LLM is enabled
+  if (USE_MOCK_LLM) {
+    console.log('[MOCK] Generating mock analysis (USE_MOCK_LLM=true)');
+    return generateMockAnalysis(sourceFiles, dependencyGraph);
+  }
+
   try {
     await respectRateLimit();
 
