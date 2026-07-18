@@ -61,13 +61,25 @@ function parseGitHubUrl(url: string): { owner: string; repo: string } {
   };
 }
 
-// Get repository file tree
-async function getRepoFileTree(owner: string, repo: string): Promise<any[]> {
+// Get repository's default branch
+async function getDefaultBranch(owner: string, repo: string): Promise<string> {
   try {
-    const { data } = await octokit.repos.getContents({
+    const { data } = await octokit.repos.get({ owner, repo });
+    return data.default_branch || 'main';
+  } catch (error) {
+    console.warn('Could not fetch default branch, falling back to main:', error);
+    return 'main';
+  }
+}
+
+// Get repository file tree
+async function getRepoFileTree(owner: string, repo: string, defaultBranch: string): Promise<any[]> {
+  try {
+    const { data } = await octokit.repos.getContent({
       owner,
       repo,
-      ref: 'main'
+      path: '',
+      ref: defaultBranch
     });
 
     if (Array.isArray(data)) {
@@ -82,7 +94,7 @@ async function getRepoFileTree(owner: string, repo: string): Promise<any[]> {
 }
 
 // Filter and fetch source files
-async function fetchSourceFiles(owner: string, repo: string, items: any[]): Promise<{name: string; content: string; path: string}[]> {
+async function fetchSourceFiles(owner: string, repo: string, items: any[], defaultBranch: string): Promise<{name: string; content: string; path: string}[]> {
   const sourceFiles = [];
   const excludedPatterns = ['.git', 'node_modules', 'dist', 'build', '*.lock', '*.png', '*.jpg', '*.jpeg', '*.gif', '*.svg', '*.ico', '*.webp'];
 
@@ -101,14 +113,16 @@ async function fetchSourceFiles(owner: string, repo: string, items: any[]): Prom
             owner,
             repo,
             path: item.path || item.name,
-            ref: 'main'
+            ref: defaultBranch
           });
 
           let content: string;
-          if (typeof data === 'string') {
-            content = Buffer.from(data, 'base64').toString('utf8');
-          } else {
+          if (Array.isArray(data)) {
+            continue; // skip directories
+          } else if (data.type === 'file' && data.content) {
             content = Buffer.from(data.content, 'base64').toString('utf8');
+          } else {
+            continue; // skip symlinks, submodules, or files without content
           }
 
           sourceFiles.push({
@@ -123,15 +137,15 @@ async function fetchSourceFiles(owner: string, repo: string, items: any[]): Prom
       }
     } else if (item.type === 'dir' && !item.name.includes('.')) {
       try {
-        const subItems = await octokit.repos.getContents({
+        const subItems = await octokit.repos.getContent({
           owner,
           repo,
           path: item.path || item.name,
-          ref: 'main'
+          ref: defaultBranch
         });
 
         const subArray = Array.isArray(subItems.data) ? subItems.data : [subItems.data];
-        const nestedFiles = await fetchSourceFiles(owner, repo, subArray);
+        const nestedFiles = await fetchSourceFiles(owner, repo, subArray, defaultBranch);
         sourceFiles.push(...nestedFiles);
       } catch (error) {
         console.warn(`Failed to process directory ${item.name}:`, error);
@@ -247,8 +261,9 @@ async function generateAnalysis(sourceFiles: {name: string; content: string; pat
     const graphJson = JSON.stringify(dependencyGraph, null, 2);
     const summariesJson = JSON.stringify(fileSummaries, null, 2);
 
-    const prompt = `Based on the following dependency graph and file summaries, provide a comprehensive architecture analysis in valid JSON format.\n\nDependency Graph:\n${graphJson}\n\nFile Summaries:\n${summariesJson}\n\nReturn a JSON object with the following structure (no markdown code fences):\n{\n  "overview": "2-3 sentence architecture summary",\n  "entryPoints": [{"file": "filename.ts", "why": "explanation"}],\n  "readingOrder": [{"file": "filename.ts", "order": 1, "reason": "explanation"}],\n  "mermaidDiagram": "graph TD; A[File A] --> B[File B]; B --> C[File C];"
-}\n\nImportant rules:\n1. Use ONLY relationships present in the dependency graph - do NOT infer additional ones.\n2. Focus on the most important files for understanding the codebase.\n3. Keep the mermaid diagram readable with ≤12 nodes.\n4. Return valid JSON only, no additional text.\";\n    \n    const response = await axios.post('https://integrate.api.nvidia.com/v1/chat/completions', {
+    const prompt = `Based on the following dependency graph and file summaries, provide a comprehensive architecture analysis in valid JSON format.\n\nDependency Graph:\n${graphJson}\n\nFile Summaries:\n${summariesJson}\n\nReturn a JSON object with the following structure (no markdown code fences):\n{\n  "overview": "2-3 sentence architecture summary",\n  "entryPoints": [{"file": "filename.ts", "why": "explanation"}],\n  "readingOrder": [{"file": "filename.ts", "order": 1, "reason": "explanation"}],\n  "mermaidDiagram": "graph TD; A[File A] --> B[File B]; B --> C[File C];"\n}\n\nImportant rules:\n1. Use ONLY relationships present in the dependency graph - do NOT infer additional ones.\n2. Focus on the most important files for understanding the codebase.\n3. Keep the mermaid diagram readable with ≤12 nodes.\n4. Return valid JSON only, no additional text.`;
+
+    const response = await axios.post('https://integrate.api.nvidia.com/v1/chat/completions', {
       model: 'z-ai/glm-5.2',
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 500,
@@ -303,11 +318,14 @@ app.post('/analyze', async (req, res) => {
 
     console.log(`Analyzing repository: ${owner}/${repo}`);
 
+    // Get repository default branch
+    const defaultBranch = await getDefaultBranch(owner, repo);
+
     // Get repository file tree
-    const repoItems = await getRepoFileTree(owner, repo);
+    const repoItems = await getRepoFileTree(owner, repo, defaultBranch);
 
     // Fetch source files (limit for MVP)
-    const sourceFiles = await fetchSourceFiles(owner, repo, repoItems);
+    const sourceFiles = await fetchSourceFiles(owner, repo, repoItems, defaultBranch);
 
     if (sourceFiles.length === 0) {
       return res.status(400).json({ error: 'No source files found in the repository' });
