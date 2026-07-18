@@ -7,6 +7,7 @@ import helmet from 'helmet';
 import compression from 'compression';
 import fs from 'fs/promises';
 import path from 'path';
+import os from 'os';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -229,47 +230,40 @@ function isSourceFile(filename: string): boolean {
   return sourceExtensions.some(ext => lowerName.endsWith(ext));
 }
 
-// Build import dependency graph
+// Build import dependency graph using madge
+// Writes in-memory files to a temp directory so madge can analyze them
 async function buildDependencyGraph(sourceFiles: {name: string; content: string; path: string}[]): Promise<Record<string, string[]>> {
-  const graph: Record<string, string[]> = {};
+  const tmpDir = path.join(os.tmpdir(), `codebase-explainer-${Date.now()}`);
 
-  for (const file of sourceFiles) {
-    const dependencies: string[] = [];
-    const content = file.content;
-    const filename = file.name;
-
-    // Extract import statements
-    const importRegex = /import\s+(?:\{[^}]*\}|\w+)\s+from\s+['"]([^'"]+)['"]/g;
-    let match;
-
-    while ((match = importRegex.exec(content)) !== null) {
-      const importPath = match[1];
-
-      // Resolve relative paths
-      if (importPath.startsWith('./') || importPath.startsWith('../')) {
-        const relativeSource = sourceFiles.find(f => {
-          const fPath = f.path.replace(/\/\w+\.\w+$/, '');
-          const importPathResolved = path.resolve(fPath, importPath);
-          const targetPath = path.resolve(fPath, f.name);
-          return importPathResolved === targetPath;
-        });
-
-        if (relativeSource) {
-          dependencies.push(relativeSource.name);
-        }
-      } else if (!importPath.startsWith('http') && !importPath.startsWith('https') && !importPath.includes('node_modules')) {
-        // Local module
-        const localSource = sourceFiles.find(f => f.name === importPath || f.path === importPath);
-        if (localSource) {
-          dependencies.push(localSource.name);
-        }
-      }
+  try {
+    // Write fetched source files to temp directory, preserving paths
+    for (const file of sourceFiles) {
+      const filePath = path.join(tmpDir, file.path);
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, file.content, 'utf8');
     }
 
-    graph[filename] = dependencies;
-  }
+    // Run madge against the temp directory (handles both require() and import)
+    const result = await madge(tmpDir);
+    const rawGraph: Record<string, string[]> = result.obj();
 
-  return graph;
+    return rawGraph;
+  } catch (error) {
+    console.error('Error building dependency graph with madge:', error);
+    // Fall back to an empty graph keyed by filename
+    const fallback: Record<string, string[]> = {};
+    for (const file of sourceFiles) {
+      fallback[file.name] = [];
+    }
+    return fallback;
+  } finally {
+    // Clean up temp directory
+    try {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
 }
 
 // Summarize file content with NIM API
