@@ -90,16 +90,6 @@ function generateMockAnalysis(sourceFiles: {name: string; content: string; path:
   };
 }
 
-// Get free tier rate limit to check if we're over limit
-async function checkRateLimit(): Promise<boolean> {
-  try {
-    const response = await axios.get('https://integrate.api.nvidia.com/v1/status');
-    const usage = response.data?.usage || {};
-    return (usage.remaining || 0) > 10; // conservative threshold
-  } catch {
-    return true; // assume we can proceed if we can't check
-  }
-}
 
 // Delay to respect rate limits
 async function respectRateLimit(): Promise<void> {
@@ -274,13 +264,6 @@ async function summarizeFileContent(file: {name: string; content: string; path: 
   }
 
   try {
-    // Check if we should proceed with NIM call
-    const canProceed = await checkRateLimit();
-    if (!canProceed) {
-      await new Promise(resolve => setTimeout(resolve, 60000)); // wait 1 minute
-      return `Summary skipped for ${file.name} (rate limited)`;
-    }
-
     await respectRateLimit();
 
     const prompt = `In 1-2 sentences, what does this file do?\nFile: ${file.name}\n\nContent:\n${file.content}\n\nFocus on the file's primary purpose and main functionality.`;
