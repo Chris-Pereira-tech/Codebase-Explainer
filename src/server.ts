@@ -269,7 +269,7 @@ async function summarizeFileContent(file: {name: string; content: string; path: 
     const prompt = `In 1-2 sentences, what does this file do?\nFile: ${file.name}\n\nContent:\n${file.content}\n\nFocus on the file's primary purpose and main functionality.`;
 
     const response = await axios.post('https://integrate.api.nvidia.com/v1/chat/completions', {
-      model: 'z-ai/glm-5.2',
+      model: 'meta/llama-3.1-8b-instruct',
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 100,
       temperature: 0.3
@@ -313,7 +313,7 @@ async function generateAnalysis(sourceFiles: {name: string; content: string; pat
     const prompt = `Based on the following dependency graph and file summaries, provide a comprehensive architecture analysis in valid JSON format.\n\nDependency Graph:\n${graphJson}\n\nFile Summaries:\n${summariesJson}\n\nReturn a JSON object with the following structure (no markdown code fences):\n{\n  "overview": "2-3 sentence architecture summary",\n  "entryPoints": [{"file": "filename.ts", "why": "explanation"}],\n  "readingOrder": [{"file": "filename.ts", "order": 1, "reason": "explanation"}],\n  "mermaidDiagram": "graph TD; A[File A] --> B[File B]; B --> C[File C];"\n}\n\nImportant rules:\n1. Use ONLY relationships present in the dependency graph - do NOT infer additional ones.\n2. Focus on the most important files for understanding the codebase.\n3. Keep the mermaid diagram readable with ≤12 nodes.\n4. Return valid JSON only, no additional text.`;
 
     const response = await axios.post('https://integrate.api.nvidia.com/v1/chat/completions', {
-      model: 'z-ai/glm-5.2',
+      model: 'meta/llama-3.1-8b-instruct',
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 500,
       temperature: 0.3
