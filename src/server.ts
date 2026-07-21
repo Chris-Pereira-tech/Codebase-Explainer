@@ -50,6 +50,66 @@ function generateMockFileSummary(file: {name: string; content: string; path: str
   return summaries[fileType || ''] || `Source file '${file.name}' contributing to the codebase architecture.`;
 }
 
+// Generate Mermaid diagram directly from the real dependency graph
+// Caps at ~15 nodes, picking the most-connected ones (highest in-degree + out-degree)
+function generateMermaidFromGraph(dependencyGraph: Record<string, string[]>): string {
+  const allNodes = new Set<string>();
+  const outDegree: Record<string, number> = {};
+  const inDegree: Record<string, number> = {};
+
+  // Collect all nodes and compute degrees
+  for (const [src, deps] of Object.entries(dependencyGraph)) {
+    allNodes.add(src);
+    outDegree[src] = (outDegree[src] || 0) + deps.length;
+    for (const dep of deps) {
+      allNodes.add(dep);
+      inDegree[dep] = (inDegree[dep] || 0) + 1;
+    }
+  }
+
+  // Rank nodes by total connectivity (in-degree + out-degree)
+  const MAX_NODES = 15;
+  let selectedNodes: Set<string>;
+
+  if (allNodes.size <= MAX_NODES) {
+    selectedNodes = allNodes;
+  } else {
+    const ranked = [...allNodes].sort((a, b) => {
+      const scoreA = (inDegree[a] || 0) + (outDegree[a] || 0);
+      const scoreB = (inDegree[b] || 0) + (outDegree[b] || 0);
+      return scoreB - scoreA;
+    });
+    selectedNodes = new Set(ranked.slice(0, MAX_NODES));
+  }
+
+  // Build stable node-ID map (alphabetical order for determinism)
+  const sortedNodes = [...selectedNodes].sort();
+  const nodeId: Record<string, string> = {};
+  sortedNodes.forEach((node, i) => {
+    nodeId[node] = `N${i}`;
+  });
+
+  // Build Mermaid lines
+  const lines: string[] = ['graph TD'];
+
+  // Declare every selected node with a readable label (basename)
+  for (const node of sortedNodes) {
+    const label = node.replace(/\\/g, '/');  // normalise separators
+    lines.push(`    ${nodeId[node]}["${label}"]`);
+  }
+
+  // Emit one edge per real dependency (only between selected nodes)
+  for (const [src, deps] of Object.entries(dependencyGraph)) {
+    if (!selectedNodes.has(src)) continue;
+    for (const dep of deps) {
+      if (!selectedNodes.has(dep)) continue;
+      lines.push(`    ${nodeId[src]} --> ${nodeId[dep]}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 // Mock analysis generator
 function generateMockAnalysis(sourceFiles: {name: string; content: string; path: string}[], dependencyGraph: Record<string, string[]>): any {
   const entryPoints = sourceFiles.slice(0, 5).map((f, i) => ({
@@ -63,30 +123,10 @@ function generateMockAnalysis(sourceFiles: {name: string; content: string; path:
     reason: `Read ${i === 0 ? 'first' : 'next'} to understand the ${f.name.replace(/\.[^.]+$/, '')} layer before dependent modules.`
   }));
 
-  // Build mermaid diagram from actual dependency graph
-  const mermaidNodes = sourceFiles.slice(0, 8).map((f, i) =>
-    `    ${String.fromCharCode(65 + i)}[${f.name}]`
-  ).join('\n');
-  const mermaidEdges = Object.entries(dependencyGraph)
-    .slice(0, 6)
-    .flatMap(([src, deps]) => {
-      const srcIdx = sourceFiles.findIndex(f => f.name === src);
-      return deps.map(dep => {
-        const depIdx = sourceFiles.findIndex(f => f.name === dep);
-        if (srcIdx >= 0 && srcIdx < 8 && depIdx >= 0 && depIdx < 8) {
-          return `    ${String.fromCharCode(65 + srcIdx)} --> ${String.fromCharCode(65 + depIdx)}`;
-        }
-        return null;
-      }).filter(Boolean);
-    }).join('\n');
-
-  const mermaidDiagram = `graph TD;\n${mermaidNodes}${mermaidEdges ? '\n' + mermaidEdges : ''}`;
-
   return {
     overview: `This ${sourceFiles.length}-file codebase implements a web application with a Node.js/Express backend and React frontend. The architecture follows a client-server pattern with API integration for code analysis and visualization.`,
     entryPoints: entryPoints.length > 0 ? entryPoints : [{ file: 'server.ts', why: 'Main backend entry point' }],
-    readingOrder,
-    mermaidDiagram
+    readingOrder
   };
 }
 
@@ -310,7 +350,7 @@ async function generateAnalysis(sourceFiles: {name: string; content: string; pat
     const graphJson = JSON.stringify(dependencyGraph, null, 2);
     const summariesJson = JSON.stringify(fileSummaries, null, 2);
 
-    const prompt = `Based on the following dependency graph and file summaries, provide a comprehensive architecture analysis in valid JSON format.\n\nDependency Graph:\n${graphJson}\n\nFile Summaries:\n${summariesJson}\n\nReturn a JSON object with the following structure (no markdown code fences):\n{\n  "overview": "2-3 sentence architecture summary",\n  "entryPoints": [{"file": "filename.ts", "why": "explanation"}],\n  "readingOrder": [{"file": "filename.ts", "order": 1, "reason": "explanation"}],\n  "mermaidDiagram": "graph TD; A[File A] --> B[File B]; B --> C[File C];"\n}\n\nImportant rules:\n1. Use ONLY relationships present in the dependency graph - do NOT infer additional ones.\n2. Focus on the most important files for understanding the codebase.\n3. Keep the mermaid diagram readable with ≤12 nodes.\n4. Return valid JSON only, no additional text.`;
+    const prompt = `Based on the following dependency graph and file summaries, provide a comprehensive architecture analysis in valid JSON format.\n\nDependency Graph:\n${graphJson}\n\nFile Summaries:\n${summariesJson}\n\nReturn a JSON object with the following structure (no markdown code fences):\n{\n  "overview": "2-3 sentence architecture summary",\n  "entryPoints": [{"file": "filename.ts", "why": "explanation"}],\n  "readingOrder": [{"file": "filename.ts", "order": 1, "reason": "explanation"}]\n}\n\nImportant rules:\n1. Focus on the most important files for understanding the codebase.\n2. Return valid JSON only, no additional text.`;
 
     const response = await axios.post('https://integrate.api.nvidia.com/v1/chat/completions', {
       model: 'meta/llama-3.1-8b-instruct',
@@ -349,8 +389,7 @@ async function generateAnalysis(sourceFiles: {name: string; content: string; pat
     return {
       overview: 'Analysis unavailable due to server error',
       entryPoints: [],
-      readingOrder: [],
-      mermaidDiagram: 'graph TD; Error[Analysis Failed] --> Info[Try Again Later];'
+      readingOrder: []
     };
   }
 }
@@ -383,8 +422,11 @@ app.post('/analyze', async (req, res) => {
     // Build dependency graph
     const dependencyGraph = await buildDependencyGraph(sourceFiles);
 
-    // Generate analysis
+    // Generate analysis (LLM handles overview, entryPoints, readingOrder)
     const analysis = await generateAnalysis(sourceFiles, dependencyGraph);
+
+    // Generate mermaid diagram directly from the real graph (not LLM)
+    const mermaidDiagram = generateMermaidFromGraph(dependencyGraph);
 
     res.json({
       success: true,
@@ -395,7 +437,8 @@ app.post('/analyze', async (req, res) => {
         overview: analysis.overview || 'Analysis unavailable',
         entryPoints: analysis.entryPoints || [],
         readingOrder: analysis.readingOrder || [],
-        mermaidDiagram: analysis.mermaidDiagram || 'graph TD; Error[Analysis Failed]',
+        mermaidDiagram,
+        dependencyGraph,
         generatedAt: new Date().toISOString()
       }
     });
