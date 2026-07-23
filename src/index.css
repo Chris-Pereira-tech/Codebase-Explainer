@@ -1,12 +1,6 @@
-/* Base styles */
+/* Base reset — main styles live in App.css */
 html, body, #root {
   height: 100%;
-}
-
-/* Mermaid diagram styling */
-.mermaid-content {
-  background-color: #f9fafb;
-  border-radius: 0.5rem;
-  padding: 1rem;
-  overflow-x: auto;
+  margin: 0;
+  padding: 0;
 }
